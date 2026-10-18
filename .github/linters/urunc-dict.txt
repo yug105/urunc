@@ -37,6 +37,7 @@ Mewz
 Mirred
 Mkdev
 Mountpoint
+NETFILTER
 NEWCGROUP
 NEWIPC
 NEWNET
