@@ -51,6 +51,7 @@ const (
 	annotMountRootfs   = "com.urunc.unikernel.mountRootfs"
 	annotBootKernel    = "com.urunc.unikernel.bootKernel"
 	annotBootInitrd    = "com.urunc.unikernel.bootInitrd"
+	annotRootfsMode    = "com.urunc.unikernel.rootfsMode"
 	annotNetDev        = "com.urunc.unikernel.solo5NetDev"
 	annotBlkDev        = "com.urunc.unikernel.solo5BlkDev"
 	annotVAccel        = "com.urunc.unikernel.vAccel"
@@ -117,7 +118,17 @@ type UnikernelConfig struct {
 	// vAccel annotations, come only from the spec and never from urunc.json.
 	BootKernel string `json:"-"`
 	BootInitrd string `json:"-"`
+	// RootfsMode selects how a generic container boot gets its root. Empty
+	// keeps the default, the container rootfs shared over virtio-fs or as a
+	// block device. RootfsModeOverlayBlock boots it from a read-only ext4
+	// image of the container image and a writable ext4 upper, as two disks.
+	RootfsMode string `json:"-"`
 }
+
+// RootfsModeOverlayBlock is the rootfsMode annotation value of an overlay
+// root on two disks: a read-only lower built from the image, cached per
+// image, and a writable upper per container.
+const RootfsModeOverlayBlock = "overlay-block"
 
 // solo5DevNameRe constrains the valid values of a network or block device
 // identifier for Solo5 guests when received from the annotations.
@@ -195,6 +206,7 @@ func GetUnikernelConfig(bundleDir string, spec *specs.Spec) (*UnikernelConfig, e
 	// ships its own unikernel through urunc.json.
 	jsonConf.BootKernel = spec.Annotations[annotBootKernel]
 	jsonConf.BootInitrd = spec.Annotations[annotBootInitrd]
+	jsonConf.RootfsMode = spec.Annotations[annotRootfsMode]
 
 	return jsonConf, nil
 }
@@ -211,6 +223,7 @@ func getConfigFromSpec(spec *specs.Spec) *UnikernelConfig {
 	MountRootfs := spec.Annotations[annotMountRootfs]
 	bootKernel := spec.Annotations[annotBootKernel]
 	bootInitrd := spec.Annotations[annotBootInitrd]
+	rootfsMode := spec.Annotations[annotRootfsMode]
 	netDev := spec.Annotations[annotNetDev]
 	blkDev := spec.Annotations[annotBlkDev]
 	vAccel := spec.Annotations[annotVAccel]
@@ -247,6 +260,7 @@ func getConfigFromSpec(spec *specs.Spec) *UnikernelConfig {
 		"mountRootfs":      MountRootfs,
 		"bootKernel":       bootKernel,
 		"bootInitrd":       bootInitrd,
+		"rootfsMode":       rootfsMode,
 		"netDev":           netDev,
 		"blkDev":           blkDev,
 		"vAccel":           vAccel,
@@ -264,6 +278,7 @@ func getConfigFromSpec(spec *specs.Spec) *UnikernelConfig {
 		MountRootfs:      MountRootfs,
 		BootKernel:       bootKernel,
 		BootInitrd:       bootInitrd,
+		RootfsMode:       rootfsMode,
 		NetDev:           netDev,
 		BlkDev:           blkDev,
 		VAccel:           vAccel,
@@ -431,6 +446,9 @@ func (c *UnikernelConfig) Map() map[string]string {
 	if c.BootInitrd != "" {
 		myMap[annotBootInitrd] = c.BootInitrd
 	}
+	if c.RootfsMode != "" {
+		myMap[annotRootfsMode] = c.RootfsMode
+	}
 
 	return myMap
 }
@@ -490,6 +508,11 @@ func (c *UnikernelConfig) validateValues() error {
 	}
 
 	err = c.validateContainerBoot()
+	if err != nil {
+		return err
+	}
+
+	err = c.validateRootfsMode()
 	if err != nil {
 		return err
 	}
@@ -587,6 +610,28 @@ func (c *UnikernelConfig) validateContainerBoot() error {
 		return fmt.Errorf("%s requires %s to be true", annotBootKernel, annotMountRootfs)
 	}
 
+	return nil
+}
+
+// validateRootfsMode checks the rootfsMode annotation. The only mode is
+// overlay-block, for a generic container boot on a monitor that attaches a
+// read-only disk with a serial: hvi, cloud-hypervisor or qemu.
+func (c *UnikernelConfig) validateRootfsMode() error {
+	if c.RootfsMode == "" {
+		return nil
+	}
+	if c.RootfsMode != RootfsModeOverlayBlock {
+		return fmt.Errorf("invalid value %q for %s: expected %q", c.RootfsMode, annotRootfsMode, RootfsModeOverlayBlock)
+	}
+	if !c.hasContainerBoot() {
+		return fmt.Errorf("%s needs a generic container boot (%s and %s)", annotRootfsMode, annotBootKernel, annotBootInitrd)
+	}
+	switch hypervisors.VmmType(c.Hypervisor) {
+	case hypervisors.HviVmm, hypervisors.CloudHypervisorVmm, hypervisors.QemuVmm:
+	default:
+		return fmt.Errorf("%s=%s needs %s to be one of %q, %q or %q, got %q", annotRootfsMode, c.RootfsMode,
+			annotHypervisor, hypervisors.HviVmm, hypervisors.CloudHypervisorVmm, hypervisors.QemuVmm, c.Hypervisor)
+	}
 	return nil
 }
 
